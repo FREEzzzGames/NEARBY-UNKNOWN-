@@ -103,7 +103,7 @@ function installSecondaryLayers() {
   if (!map.getSource('osm-places')) map.addSource('osm-places', { type: 'geojson', data: emptyCollection() });
   if (!map.getLayer('osm-places-polygons')) map.addLayer({
     id: 'osm-places-polygons', type: 'fill', source: 'osm-places',
-    filter: ['==', ['geometry-type'], 'Polygon'],
+    filter: ['in', ['geometry-type'], ['literal', ['Polygon', 'MultiPolygon']]],
     paint: { 'fill-color': '#66fcf1', 'fill-opacity': 0.18 }
   });
   if (!map.getLayer('osm-places-outlines')) map.addLayer({
