@@ -46,6 +46,7 @@ map.on('load', () => {
       'circle-stroke-color': '#101820', 'circle-stroke-width': 1.5, 'circle-opacity': 0.92
     }
   });
+  installSecondaryLayers();
   map.on('mousemove', (event) => {
     $('#coordinates').textContent = event.lngLat.lat.toFixed(4) + '°, ' + event.lngLat.lng.toFixed(4) + '°';
   });
@@ -62,6 +63,34 @@ map.on('load', () => {
   map.on('mouseleave', 'earthquakes-points', () => { map.getCanvas().style.cursor = ''; });
   loadData();
 });
+
+function installSecondaryLayers() {
+  if (!map.getSource('osm-places')) map.addSource('osm-places', { type: 'geojson', data: emptyCollection() });
+  if (!map.getLayer('osm-places-points')) map.addLayer({
+    id: 'osm-places-points', type: 'circle', source: 'osm-places',
+    paint: { 'circle-radius': 6, 'circle-color': '#66fcf1', 'circle-stroke-color': '#0b0c10', 'circle-stroke-width': 2 },
+    layout: { visibility: state.layers.osm ? 'visible' : 'none' }
+  });
+  if (!map.getSource('weather-point')) map.addSource('weather-point', { type: 'geojson', data: emptyCollection() });
+  if (!map.getLayer('weather-point-marker')) map.addLayer({
+    id: 'weather-point-marker', type: 'circle', source: 'weather-point',
+    paint: { 'circle-radius': 8, 'circle-color': '#ffb454', 'circle-stroke-color': '#fff1cf', 'circle-stroke-width': 2 },
+    layout: { visibility: state.layers.weather ? 'visible' : 'none' }
+  });
+  syncSecondaryLayerData();
+}
+function syncSecondaryLayerData() {
+  const osm = state.features.filter((f) => f.type === 'osm').map((f) => ({
+    type: 'Feature', geometry: { type: 'Point', coordinates: f.coords },
+    properties: { id: f.id, title: f.title, detail: f.detail, source: f.source, url: f.url }
+  }));
+  const weather = state.features.filter((f) => f.type === 'weather').map((f) => ({
+    type: 'Feature', geometry: { type: 'Point', coordinates: f.coords },
+    properties: { id: f.id, title: f.title, detail: f.detail, source: f.source, url: f.url }
+  }));
+  if (map.getSource('osm-places')) map.getSource('osm-places').setData({ type: 'FeatureCollection', features: osm });
+  if (map.getSource('weather-point')) map.getSource('weather-point').setData({ type: 'FeatureCollection', features: weather });
+}
 
 function emptyCollection() { return { type: 'FeatureCollection', features: [] }; }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -111,6 +140,7 @@ async function loadWeather() {
     url: 'https://open-meteo.com/', updated: Date.now(), humidity: current.relative_humidity_2m
   };
   state.features = state.features.filter((f) => f.type !== 'weather').concat([feature]);
+  syncSecondaryLayerData();
   return 1;
 }
 
@@ -129,6 +159,7 @@ async function loadOsmPlaces() {
     return { id: 'osm-' + item.type + '-' + item.id, type: 'osm', title: tags.name || tags.historic || tags.tourism || 'Исторический объект', detail: tags.description || tags.historic || tags.tourism || 'Объект из OpenStreetMap', coords: [lon, lat], source: 'OpenStreetMap', url: 'https://www.openstreetmap.org/' + item.type + '/' + item.id, updated: Date.now() };
   }).filter(Boolean);
   state.features = state.features.filter((f) => f.type !== 'osm').concat(features);
+  syncSecondaryLayerData();
   return features.length;
 }
 
@@ -202,6 +233,8 @@ $('#layers-panel').querySelectorAll('[data-layer]').forEach((input) => input.add
   if (input.dataset.layer === 'osm' && input.checked) loadData();
   else if (input.dataset.layer === 'earthquakes' && map.getLayer('earthquakes-points')) map.setLayoutProperty('earthquakes-points', 'visibility', input.checked ? 'visible' : 'none');
   if (input.dataset.layer === 'earthquakes' && map.getLayer('earthquakes-glow')) map.setLayoutProperty('earthquakes-glow', 'visibility', input.checked ? 'visible' : 'none');
+  if (input.dataset.layer === 'osm' && map.getLayer('osm-places-points')) map.setLayoutProperty('osm-places-points', 'visibility', input.checked ? 'visible' : 'none');
+  if (input.dataset.layer === 'weather' && map.getLayer('weather-point-marker')) map.setLayoutProperty('weather-point-marker', 'visibility', input.checked ? 'visible' : 'none');
   if (!input.checked) { state.features = state.features.filter((f) => f.type !== (input.dataset.layer === 'earthquakes' ? 'earthquake' : input.dataset.layer === 'weather' ? 'weather' : 'osm')); renderResults(); }
   else loadData();
 }));
@@ -231,6 +264,7 @@ $('#theme-button').addEventListener('click', () => {
       map.on('mouseenter', 'earthquakes-points', () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', 'earthquakes-points', () => { map.getCanvas().style.cursor = ''; });
     }
+    installSecondaryLayers();
     map.jumpTo({ center, zoom });
     loadData();
   });
