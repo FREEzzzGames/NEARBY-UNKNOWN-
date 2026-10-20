@@ -337,11 +337,14 @@ async function loadOsmPlaces({ force = false } = {}) {
   ];
   for (const endpoint of endpoints) {
     let timer;
+    const endpointController = new AbortController();
+    const abortEndpoint = () => endpointController.abort();
+    controller.signal.addEventListener('abort', abortEndpoint, { once: true });
     try {
-      timer = setTimeout(() => controller.abort(), 14000);
+      timer = setTimeout(() => endpointController.abort(), 14000);
       const response = await fetch(endpoint, {
         method: 'POST',
-        signal: controller.signal,
+        signal: endpointController.signal,
         headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Accept': 'application/json' },
         body: query
       });
@@ -349,13 +352,11 @@ async function loadOsmPlaces({ force = false } = {}) {
       data = await response.json();
       break;
     } catch (error) {
-      if (controller.signal.aborted || error.name === 'AbortError') {
-        if (requestId !== state.placesRequestId) return 0;
-        throw error;
-      }
+      if (controller.signal.aborted || requestId !== state.placesRequestId) return 0;
       lastError = error;
     } finally {
       clearTimeout(timer);
+      controller.signal.removeEventListener('abort', abortEndpoint);
     }
   }
   if (!data) {
