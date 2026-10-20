@@ -9,7 +9,8 @@ const state = {
   features: [],
   layers: { earthquakes: true, weather: true, osm: false },
   lastUpdated: null,
-  mapReady: false
+  mapReady: false,
+  activeTab: 'map'
 };
 
 const themes = [
@@ -180,29 +181,43 @@ async function loadData() {
   renderResults();
 }
 
+function readSavedItems() {
+  try {
+    const value = JSON.parse(localStorage.getItem('nu-saved-items') || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
 function renderResults() {
   const center = map.getCenter();
-  const list = state.features
-    .filter((f) => state.layers[f.type === 'earthquake' ? 'earthquakes' : f.type === 'weather' ? 'weather' : 'osm'])
-    .filter((f) => state.filter === 'all' || f.type === state.filter)
-    .map((f) => ({ ...f, distance: distanceKm([center.lng, center.lat], f.coords) }))
+  const savedItems = readSavedItems();
+  const sourceItems = state.activeTab === 'world'
+    ? Object.values(savedItems)
+    : state.features.filter((f) => state.layers[f.type === 'earthquake' ? 'earthquakes' : f.type === 'weather' ? 'weather' : 'osm']);
+  const list = sourceItems
+    .filter((f) => state.activeTab === 'world' || state.filter === 'all' || f.type === state.filter)
+    .map((f) => ({ ...f, distance: Array.isArray(f.coords) ? distanceKm([center.lng, center.lat], f.coords) : Infinity }))
     .sort((a, b) => {
       if (a.type === 'earthquake' && b.type === 'earthquake') return b.mag - a.mag;
       return a.distance - b.distance;
     });
   $('#layer-count').textContent = String(Object.values(state.layers).filter(Boolean).length).padStart(2, '0');
+  if (state.activeTab === 'world') {
+    $('#result-summary').textContent = list.length ? list.length + ' сохранённых объектов на этом устройстве' : 'Твои личные находки — только на этом устройстве';
+  }
   if (!list.length) {
-    $('#results').innerHTML = '<div class="empty-state"><span>⌁</span><p>Нет загруженных объектов в этом слое. Включи слой или обнови данные.</p></div>';
+    $('#results').innerHTML = '<div class="empty-state"><span>⌁</span><p>' + (state.activeTab === 'world' ? 'Пока нет сохранённых находок. Открой DISCOVER и нажми ＋ у интересного объекта.' : 'Нет загруженных объектов в этом слое. Включи слой или обнови данные.') + '</p></div>';
     return;
   }
   $('#results').innerHTML = list.slice(0, 35).map((f) => {
     const icon = f.type === 'earthquake' ? '⌁' : f.type === 'weather' ? '☼' : '⌂';
     const label = f.type === 'earthquake' ? 'НАУЧНЫЕ ДАННЫЕ' : f.type === 'weather' ? 'ТЕКУЩИЕ УСЛОВИЯ' : 'ИСТОРИЯ И МЕСТА';
     const distance = f.distance < 1 ? Math.round(f.distance * 1000) + ' м' : f.distance.toFixed(1) + ' км';
-    return '<article class="result-card" tabindex="0" data-id="' + escapeHtml(f.id) + '"><div class="result-icon ' + f.type + '">' + icon + '</div><div class="result-copy"><div class="result-meta"><span>' + label + '</span><span>' + distance + '</span></div><h3>' + escapeHtml(f.title) + '</h3><p>' + escapeHtml(f.detail) + '</p><div class="result-source">↗ ' + escapeHtml(f.source) + '</div></div><button class="save-button" data-save="' + escapeHtml(f.id) + '" aria-label="Сохранить в избранное">＋</button></article>';
+    const saved = new Set(JSON.parse(localStorage.getItem('nu-saved') || '[]'));
+    const isSaved = saved.has(f.id);
+    return '<article class="result-card" tabindex="0" data-id="' + escapeHtml(f.id) + '"><div class="result-icon ' + f.type + '">' + icon + '</div><div class="result-copy"><div class="result-meta"><span>' + label + '</span><span>' + (Number.isFinite(f.distance) ? distance : 'Сохранено') + '</span></div><h3>' + escapeHtml(f.title) + '</h3><p>' + escapeHtml(f.detail) + '</p><div class="result-source">↗ ' + escapeHtml(f.source) + '</div></div><button class="save-button ' + (isSaved ? 'saved' : '') + '" data-save="' + escapeHtml(f.id) + '" aria-label="' + (isSaved ? 'Удалить из избранного' : 'Сохранить в избранное') + '">' + (isSaved ? '✓' : '＋') + '</button></article>';
   }).join('');
   $('#results').querySelectorAll('.result-card').forEach((card) => {
-    const activate = () => { const f = state.features.find((item) => item.id === card.dataset.id); if (f) { map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 11), speed: 0.8 }); showToast('Источник: ' + f.source); } };
+    const activate = () => { const f = state.features.find((item) => item.id === card.dataset.id) || readSavedItems()[card.dataset.id]; if (f && Array.isArray(f.coords)) { map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 11), speed: 0.8 }); showToast('Источник: ' + f.source); } };
     card.addEventListener('click', (event) => { if (!event.target.closest('[data-save]')) activate(); });
     card.addEventListener('keydown', (event) => { if (event.key === 'Enter') activate(); });
   });
@@ -210,9 +225,15 @@ function renderResults() {
     event.stopPropagation();
     const id = button.dataset.save;
     const saved = new Set(JSON.parse(localStorage.getItem('nu-saved') || '[]'));
-    if (saved.has(id)) { saved.delete(id); button.textContent = '+'; showToast('Удалено из избранного'); }
-    else { saved.add(id); button.textContent = '✓'; showToast('Сохранено на этом устройстве'); }
+    const items = readSavedItems();
+    if (saved.has(id)) { saved.delete(id); delete items[id]; button.textContent = '+'; showToast('Удалено из избранного'); }
+    else {
+      const feature = state.features.find((item) => item.id === id) || items[id];
+      if (feature) items[id] = { id: feature.id, type: feature.type, title: feature.title, detail: feature.detail, coords: feature.coords, source: feature.source, url: feature.url, time: feature.time, mag: feature.mag };
+      saved.add(id); button.textContent = '✓'; showToast('Сохранено на этом устройстве');
+    }
     localStorage.setItem('nu-saved', JSON.stringify([...saved]));
+    localStorage.setItem('nu-saved-items', JSON.stringify(items));
     button.classList.toggle('saved', saved.has(id));
   }));
   const saved = new Set(JSON.parse(localStorage.getItem('nu-saved') || '[]'));
@@ -299,9 +320,16 @@ $('#search-input').addEventListener('keydown', (event) => { if (event.key === 'E
 document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', () => {
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === button));
   const tab = button.dataset.tab;
-  if (tab === 'map') { $('#discover-panel').classList.remove('panel-expanded'); $('#layers-panel').classList.add('hidden'); }
-  if (tab === 'radar' || tab === 'discover') { $('#discover-panel').classList.add('panel-expanded'); if (tab === 'discover') { state.filter = 'all'; document.querySelector('[data-filter="all"]').click(); } }
-  if (tab === 'world') showToast('Избранное хранится локально на этом устройстве');
+  state.activeTab = tab;
+  $('#discover-panel').classList.toggle('panel-expanded', tab === 'radar' || tab === 'discover' || tab === 'world');
+  $('#layers-panel').classList.add('hidden');
+  $('#discover-panel').querySelector('.eyebrow').textContent = tab === 'world' ? 'ЛИЧНЫЙ АРХИВ' : 'ИССЛЕДОВАТЕЛЬСКИЙ РАДАР';
+  $('#discover-panel h1').textContent = tab === 'world' ? 'Мой мир' : 'Неизвестное рядом';
+  document.querySelectorAll('[data-filter]').forEach((b) => b.classList.toggle('hidden', tab === 'world'));
+  $('#refresh-button').classList.toggle('hidden', tab === 'world');
+  if (tab === 'world') { renderResults(); return; }
+  if (tab === 'map') { $('#discover-panel').classList.remove('panel-expanded'); }
+  if (tab === 'radar' || tab === 'discover') { if (tab === 'discover') { state.filter = 'all'; document.querySelector('[data-filter="all"]').click(); } renderResults(); }
 }));
 const interestsKey = 'nu-interests';
 function finishWelcome(save) {
