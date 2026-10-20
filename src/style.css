@@ -32,3 +32,35 @@ body[data-tab="world"] .map-status { display: none; }
   .discover-panel.panel-expanded .result-copy h3 { font-size: 13px; }
   .discover-panel.panel-expanded .result-copy p { font-size: 11px; }
 }
+
+/* Mobile radar: keep the map visible and the navigation unobstructed. */
+@media (max-width: 850px) {
+  .discover-panel.panel-expanded {
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: 8px;
+    width: auto;
+    height: min(66%, 620px);
+    max-height: calc(100% - 20px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .discover-panel.panel-expanded .discover-head {
+    flex: 0 0 auto;
+    padding: 14px 14px 10px;
+  }
+  .discover-panel.panel-expanded .filter-row {
+    flex: 0 0 auto;
+  }
+  .discover-panel.panel-expanded .results {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .discover-panel.panel-expanded .panel-footer {
+    flex: 0 0 auto;
+    padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  }
+}
