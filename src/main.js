@@ -7,7 +7,7 @@ const state = {
   theme: localStorage.getItem('nu-theme') || 'Dark Science',
   filter: 'all',
   features: [],
-  layers: { earthquakes: true, weather: true, osm: false },
+  layers: { earthquakes: true, weather: true, osm: true },
   lastUpdated: null,
   mapReady: false,
   activeTab: 'map',
@@ -94,7 +94,7 @@ map.on('load', () => {
   map.on('moveend', () => {
     if (!state.layers.osm || !state.mapReady) return;
     clearTimeout(state.placesMoveTimer);
-    state.placesMoveTimer = setTimeout(() => loadOsmPlaces().catch(() => {}), 450);
+    state.placesMoveTimer = setTimeout(() => loadOsmPlaces().catch((error) => { if (error.name !== 'AbortError') $('#map-status-text').textContent = 'Места временно недоступны'; }), 900);
   });
   loadData();
 });
@@ -266,19 +266,21 @@ async function loadOsmPlaces() {
   state.placesController = controller;
   const requestId = ++state.placesRequestId;
   const bounds = map.getBounds();
+  if (map.getZoom() < 8) { $('#map-status-text').textContent = 'Приблизь карту, чтобы загрузить места'; return 0; }
   const south = Math.max(-85, bounds.getSouth()).toFixed(5);
   const west = Math.max(-180, bounds.getWest()).toFixed(5);
   const north = Math.min(85, bounds.getNorth()).toFixed(5);
   const east = Math.min(180, bounds.getEast()).toFixed(5);
   const bbox = south + ',' + west + ',' + north + ',' + east;
-  const query = '[out:json][timeout:15];(' +
+  const query = '[out:json][timeout:8];(' +
     'nwr[' + '"name"' + '][' + '"historic"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"tourism"~"museum|attraction|artwork|viewpoint|gallery"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"amenity"~"museum|arts_centre|theatre|planetarium"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
-    ' );out geom 250;';
+    ' );out center 150;';
+  $('#map-status-text').textContent = 'Загружаем места на карте…';
   const response = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     signal: controller.signal,
@@ -327,7 +329,7 @@ async function loadOsmPlaces() {
   state.features = state.features.filter((f) => f.type !== 'osm').concat(features);
   syncSecondaryLayerData();
   renderResults();
-  $('#map-status-text').textContent = 'Места на видимой области: ' + features.length;
+  $('#map-status-text').textContent = 'Места на карте: ' + features.length;
   return features.length;
 }
 
