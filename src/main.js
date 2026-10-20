@@ -76,8 +76,21 @@ map.on('load', () => {
       .setHTML('<div class="popup-card"><span class="eyebrow">OPENSTREETMAP · МЕСТО</span><strong>' + escapeHtml(p.title || 'Без названия') + '</strong><p>' + (details || 'Категория не указана') + '</p>' + (link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть объект в OpenStreetMap ↗</a></p>' : '') + '<small>Координаты: ' + event.lngLat.lat.toFixed(5) + ', ' + event.lngLat.lng.toFixed(5) + '</small></div>')
       .addTo(map);
   });
-  map.on('mouseenter', 'osm-places-points', () => { map.getCanvas().style.cursor = 'pointer'; });
-  map.on('mouseleave', 'osm-places-points', () => { map.getCanvas().style.cursor = ''; });
+  ['osm-places-points', 'osm-places-polygons', 'osm-places-outlines'].forEach((layerId) => {
+    map.on('click', layerId, (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      const p = feature.properties || {};
+      const link = safeUrl(p.url);
+      const details = [p.category, p.detail].filter(Boolean).map(escapeHtml).join(' · ');
+      new maplibregl.Popup({ closeButton: true, maxWidth: '300px' })
+        .setLngLat(event.lngLat)
+        .setHTML('<div class="popup-card"><span class="eyebrow">OPENSTREETMAP · МЕСТО</span><strong>' + escapeHtml(p.title || 'Без названия') + '</strong><p>' + (details || 'Категория не указана') + '</p>' + (link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть объект в OpenStreetMap ↗</a></p>' : '') + '<small>Координаты: ' + event.lngLat.lat.toFixed(5) + ', ' + event.lngLat.lng.toFixed(5) + '</small></div>')
+        .addTo(map);
+    });
+    map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
+  });
   map.on('moveend', () => {
     if (!state.layers.osm || !state.mapReady) return;
     clearTimeout(state.placesMoveTimer);
@@ -88,10 +101,23 @@ map.on('load', () => {
 
 function installSecondaryLayers() {
   if (!map.getSource('osm-places')) map.addSource('osm-places', { type: 'geojson', data: emptyCollection() });
+  if (!map.getLayer('osm-places-polygons')) map.addLayer({
+    id: 'osm-places-polygons', type: 'fill', source: 'osm-places',
+    filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'fill-color': '#66fcf1', 'fill-opacity': 0.18 }
+  });
+  if (!map.getLayer('osm-places-outlines')) map.addLayer({
+    id: 'osm-places-outlines', type: 'line', source: 'osm-places',
+    filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'line-color': '#66fcf1', 'line-width': 1.8, 'line-opacity': 0.9 }
+  });
   if (!map.getLayer('osm-places-points')) map.addLayer({
     id: 'osm-places-points', type: 'circle', source: 'osm-places',
-    paint: { 'circle-radius': 6, 'circle-color': '#66fcf1', 'circle-stroke-color': '#0b0c10', 'circle-stroke-width': 2 },
-    layout: { visibility: state.layers.osm ? 'visible' : 'none' }
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 6, 'circle-color': '#66fcf1', 'circle-stroke-color': '#0b0c10', 'circle-stroke-width': 2 }
+  });
+  ['osm-places-polygons', 'osm-places-outlines', 'osm-places-points'].forEach((id) => {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', state.layers.osm ? 'visible' : 'none');
   });
   if (!map.getSource('weather-point')) map.addSource('weather-point', { type: 'geojson', data: emptyCollection() });
   if (!map.getLayer('weather-point-marker')) map.addLayer({
@@ -103,7 +129,8 @@ function installSecondaryLayers() {
 }
 function syncSecondaryLayerData() {
   const osm = state.features.filter((f) => f.type === 'osm').map((f) => ({
-    type: 'Feature', geometry: { type: 'Point', coordinates: f.coords },
+    type: 'Feature',
+    geometry: f.geometry || { type: 'Point', coordinates: f.coords },
     properties: { id: f.id, title: f.title, detail: f.detail, category: f.category || '', source: f.source, url: f.url }
   }));
   const weather = state.features.filter((f) => f.type === 'weather').map((f) => ({
@@ -185,7 +212,7 @@ async function loadOsmPlaces() {
     'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
-    ');out center tags 250;';
+    ' );out geom tags 250;';
   const response = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     signal: controller.signal,
@@ -196,10 +223,20 @@ async function loadOsmPlaces() {
   const data = await response.json();
   if (requestId !== state.placesRequestId || controller.signal.aborted) return 0;
   const features = (data.elements || []).map((item) => {
-    const lon = item.lon ?? item.center?.lon;
-    const lat = item.lat ?? item.center?.lat;
-    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
     const tags = item.tags || {};
+    const points = Array.isArray(item.geometry) ? item.geometry
+      .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
+      .map((point) => [point.lon, point.lat]) : [];
+    const isClosed = points.length >= 4 && points[0][0] === points[points.length - 1][0] && points[0][1] === points[points.length - 1][1];
+    const likelyArea = isClosed && (
+      tags.area === 'yes' || tags.building || tags.historic || tags.leisure || tags.landuse ||
+      tags.natural === 'water' || tags.natural === 'wood' || tags.natural === 'heath' ||
+      tags.tourism === 'attraction' || tags.tourism === 'museum' || tags.tourism === 'gallery' ||
+      tags.amenity === 'museum' || tags.amenity === 'arts_centre'
+    );
+    const lon = item.lon ?? item.center?.lon ?? (points.length ? points.reduce((sum, point) => sum + point[0], 0) / points.length : undefined);
+    const lat = item.lat ?? item.center?.lat ?? (points.length ? points.reduce((sum, point) => sum + point[1], 0) / points.length : undefined);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
     const category = tags.historic ? 'Историческое место'
       : tags.tourism === 'museum' || tags.amenity === 'museum' ? 'Музей'
       : tags.amenity === 'theatre' ? 'Театр'
@@ -220,6 +257,7 @@ async function loadOsmPlaces() {
       category,
       detail: String(detail),
       coords: [lon, lat],
+      geometry: likelyArea ? { type: 'Polygon', coordinates: [points] } : null,
       source: 'OpenStreetMap',
       url: 'https://www.openstreetmap.org/' + item.type + '/' + item.id,
       updated: Date.now()
@@ -323,7 +361,7 @@ $('#layers-panel').querySelectorAll('[data-layer]').forEach((input) => input.add
   state.layers[key] = input.checked;
   const layerIds = key === 'earthquakes' ? ['earthquakes-points', 'earthquakes-glow']
     : key === 'weather' ? ['weather-point-marker']
-    : ['osm-places-points'];
+    : ['osm-places-points', 'osm-places-polygons', 'osm-places-outlines'];
   layerIds.forEach((id) => {
     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', input.checked ? 'visible' : 'none');
   });
