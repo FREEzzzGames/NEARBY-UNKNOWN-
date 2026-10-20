@@ -384,7 +384,22 @@ function renderResults() {
     return '<article class="result-card" tabindex="0" data-id="' + escapeHtml(f.id) + '"><div class="result-icon ' + f.type + '">' + icon + '</div><div class="result-copy"><div class="result-meta"><span>' + label + '</span><span>' + (Number.isFinite(f.distance) ? distance : 'Сохранено') + '</span></div><h3>' + escapeHtml(f.title) + '</h3><p>' + escapeHtml(f.detail) + '</p><div class="result-source">↗ ' + escapeHtml(f.source) + '</div></div><button class="save-button ' + (isSaved ? 'saved' : '') + '" data-save="' + escapeHtml(f.id) + '" aria-label="' + (isSaved ? 'Удалить из избранного' : 'Сохранить в избранное') + '">' + (isSaved ? '✓' : '＋') + '</button></article>';
   }).join('');
   $('#results').querySelectorAll('.result-card').forEach((card) => {
-    const activate = () => { const f = state.features.find((item) => item.id === card.dataset.id) || readSavedItems()[card.dataset.id]; if (f && Array.isArray(f.coords)) { map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 11), speed: 0.8 }); showToast('Источник: ' + f.source); } };
+    const activate = () => {
+      const f = state.features.find((item) => item.id === card.dataset.id) || readSavedItems()[card.dataset.id];
+      if (!f || !Array.isArray(f.coords) || !Number.isFinite(f.coords[0]) || !Number.isFinite(f.coords[1])) return;
+      $('#discover-panel').classList.remove('panel-expanded');
+      document.body.dataset.tab = 'map';
+      document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === 'map'));
+      state.activeTab = 'map';
+      map.resize();
+      map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 14), speed: 0.75, essential: true });
+      const details = [f.category, f.detail].filter(Boolean).map(escapeHtml).join(' · ');
+      const link = safeUrl(f.url);
+      new maplibregl.Popup({ closeButton: true, maxWidth: '300px' })
+        .setLngLat(f.coords)
+        .setHTML('<div class="popup-card"><span class="eyebrow">СОХРАНЁННОЕ МЕСТО · ' + escapeHtml(f.source || 'Источник не указан') + '</span><strong>' + escapeHtml(f.title || 'Без названия') + '</strong><p>' + (details || 'Описание отсутствует') + '</p>' + (link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть первоисточник ↗</a></p>' : '') + '</div>')
+        .addTo(map);
+    };
     card.addEventListener('click', (event) => { if (!event.target.closest('[data-save]')) activate(); });
     card.addEventListener('keydown', (event) => { if (event.key === 'Enter') activate(); });
   });
@@ -396,7 +411,7 @@ function renderResults() {
     if (saved.has(id)) { saved.delete(id); delete items[id]; button.textContent = '+'; showToast('Удалено из избранного'); }
     else {
       const feature = state.features.find((item) => item.id === id) || items[id];
-      if (feature) items[id] = { id: feature.id, type: feature.type, title: feature.title, detail: feature.detail, coords: feature.coords, source: feature.source, url: feature.url, time: feature.time, mag: feature.mag };
+      if (feature) items[id] = { id: feature.id, type: feature.type, title: feature.title, detail: feature.detail, coords: feature.coords, source: feature.source, url: feature.url, category: feature.category, geometry: feature.geometry, time: feature.time, mag: feature.mag };
       saved.add(id); button.textContent = '✓'; showToast('Сохранено на этом устройстве');
     }
     localStorage.setItem('nu-saved', JSON.stringify([...saved]));
@@ -497,7 +512,11 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === button));
   const tab = button.dataset.tab;
   state.activeTab = tab;
+  document.body.dataset.tab = tab;
   $('#discover-panel').classList.toggle('panel-expanded', tab === 'radar' || tab === 'discover' || tab === 'world');
+  // Panel resizing changes the map viewport on mobile; explicitly recalculate it
+  // so the geographic center and rendered tiles do not appear to jump.
+  requestAnimationFrame(() => map.resize());
   $('#layers-panel').classList.add('hidden');
   $('#discover-panel').querySelector('.eyebrow').textContent = tab === 'world' ? 'ЛИЧНЫЙ АРХИВ' : 'ИССЛЕДОВАТЕЛЬСКИЙ РАДАР';
   $('#discover-panel h1').textContent = tab === 'world' ? 'Мой мир' : 'Неизвестное рядом';
