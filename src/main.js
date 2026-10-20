@@ -2,6 +2,9 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 
+// Google Places content must only be rendered on a Google Map.
+if (import.meta.env.VITE_GOOGLE_MAPS_API_KEY) { import('./google-main.js'); } else {
+
 const $ = (selector) => document.querySelector(selector);
 const state = {
   theme: localStorage.getItem('nu-theme') || 'Dark Science',
@@ -613,3 +616,5 @@ $('#skip-interests').addEventListener('click', () => finishWelcome(false));
 if (!localStorage.getItem('nu-onboarded')) $('#welcome').classList.remove('hidden');
 window.addEventListener('online', () => { showToast('Подключение восстановлено'); loadData(); });
 window.addEventListener('offline', () => showToast('Нет подключения. Доступны только уже загруженные данные.'));
+
+}
