@@ -64,3 +64,22 @@ body[data-tab="world"] .map-status { display: none; }
     padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
   }
 }
+
+/* Map/navigation interaction block: stable selection and responsive radar. */
+.result-card { touch-action: manipulation; }
+.result-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.maplibregl-popup-content { max-width: min(300px, calc(100vw - 36px)); }
+.maplibregl-popup-content .popup-card { overflow-wrap: anywhere; }
+@media (max-width: 850px) {
+  .discover-panel.panel-expanded {
+    left: 8px; right: 8px; top: 8px; bottom: 8px;
+    width: auto; height: auto; max-height: none;
+  }
+  .discover-panel.panel-expanded .discover-head,
+  .discover-panel.panel-expanded .filter-row,
+  .discover-panel.panel-expanded .panel-footer { flex-shrink: 0; }
+  .discover-panel.panel-expanded .results {
+    flex: 1 1 0; min-height: 0; overflow-y: auto;
+    overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  }
+}
