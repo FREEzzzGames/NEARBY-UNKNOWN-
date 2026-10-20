@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1118" />
+    <meta name="description" content="NEARBY UNKNOWN — исследовательская карта мест, событий и явлений." />
+    <title>NEARBY UNKNOWN</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="NEARBY UNKNOWN — главная"><span class="brand-mark">N<span>U</span></span><span><strong>NEARBY</strong><small>UNKNOWN</small></span></a>
+        <label class="search"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="Место, город или координаты" autocomplete="off"><button id="search-button" aria-label="Найти">↵</button></label>
+        <button id="locate-button" class="icon-button" title="Моё местоположение" aria-label="Моё местоположение">◎</button>
+      </header>
+      <main class="map-shell">
+        <div id="map" aria-label="Интерактивная карта"></div>
+        <aside class="map-tools">
+          <button id="layers-button" class="tool-button active"><span>◈</span> СЛОИ <b id="layer-count">02</b></button>
+          <div id="layers-panel" class="floating-panel hidden">
+            <div class="panel-heading"><span>ТЕМАТИЧЕСКИЕ СЛОИ</span><button id="close-layers" aria-label="Закрыть">×</button></div>
+            <label class="layer-row"><input type="checkbox" data-layer="earthquakes" checked><span class="layer-symbol seismic">⌁</span><span><strong>Землетрясения</strong><small>USGS · обновляемые данные</small></span><i class="live-dot"></i></label>
+            <label class="layer-row"><input type="checkbox" data-layer="weather" checked><span class="layer-symbol weather">☼</span><span><strong>Погода</strong><small>Open-Meteo · по запросу</small></span><i class="live-dot"></i></label>
+            <label class="layer-row"><input type="checkbox" data-layer="osm"><span class="layer-symbol history">⌂</span><span><strong>История и необычные места</strong><small>OSM · открытые геоданные</small></span><i class="source-dot"></i></label>
+            <p class="panel-note">Статус слоя меняется после получения ответа от источника. Недоступные данные не заменяются вымышленными объектами.</p>
+          </div>
+        </aside>
+        <div class="map-status"><span class="status-dot"></span><span id="map-status-text">Карта загружается…</span><span class="coordinates" id="coordinates">—</span></div>
+        <section class="discover-panel" id="discover-panel">
+          <div class="panel-grabber"></div>
+          <div class="discover-head"><div><p class="eyebrow">ИССЛЕДОВАТЕЛЬСКИЙ РАДАР</p><h1>Неизвестное рядом</h1><p class="subhead" id="result-summary">Подключение к открытым источникам…</p></div><button id="refresh-button" class="refresh-button" title="Обновить данные" aria-label="Обновить данные">↻</button></div>
+          <div class="filter-row"><button class="filter-chip selected" data-filter="all">Все находки</button><button class="filter-chip" data-filter="earthquake">Землетрясения</button><button class="filter-chip" data-filter="weather">Погода</button><button class="filter-chip" data-filter="osm">Места</button></div>
+          <div id="results" class="results"><div class="empty-state"><span class="spinner"></span><p>Получаем реальные данные…</p></div></div>
+          <footer class="panel-footer"><span>ИСТОЧНИКИ ДАННЫХ</span><span id="last-updated">Обновление ещё не выполнено</span></footer>
+        </section>
+        <div id="toast" class="toast hidden" role="status"></div>
+      </main>
+      <nav class="bottom-nav" aria-label="Основная навигация">
+        <button class="nav-item active" data-tab="map"><span>⌖</span><small>MAP</small></button>
+        <button class="nav-item" data-tab="radar"><span>⌁</span><small>RADAR</small></button>
+        <button class="nav-item" data-tab="discover"><span>✳</span><small>DISCOVER</small></button>
+        <button class="nav-item" data-tab="world"><span>◇</span><small>MY WORLD</small></button>
+        <button id="theme-button" class="theme-toggle" aria-label="Сменить тему карты"><span>◐</span><small>DARK SCIENCE</small></button>
+      </nav>
+      <div id="welcome" class="modal-backdrop hidden">
+        <section class="welcome-card">
+          <p class="eyebrow">PERSONAL EXPLORATION SYSTEM</p><h2>Мир больше привычных маршрутов.</h2>
+          <p>Выбери, что тебе интересно. Это можно изменить в любой момент. Геолокация не включается без твоего разрешения.</p>
+          <div class="interest-grid">
+            <label><input type="checkbox" value="history" checked><span>⌂</span>История</label>
+            <label><input type="checkbox" value="science" checked><span>⌁</span>Наука</label>
+            <label><input type="checkbox" value="nature" checked><span>☼</span>Природа</label>
+            <label><input type="checkbox" value="space"><span>✦</span>Космос</label>
+            <label><input type="checkbox" value="culture"><span>▤</span>Культура</label>
+            <label><input type="checkbox" value="technology"><span>⌘</span>Технологии</label>
+          </div>
+          <button id="save-interests" class="primary-button">СОХРАНИТЬ И ОТКРЫТЬ КАРТУ <span>→</span></button>
+          <button id="skip-interests" class="text-button">Пропустить настройку</button>
+        </section>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
