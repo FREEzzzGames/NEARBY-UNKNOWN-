@@ -364,8 +364,9 @@ async function loadData() {
   $('#map-status-text').textContent = 'Обновляем источники параллельно…';
   const results = [];
   const tasks = [];
+  let settled = 0;
   const updateProgress = () => {
-    const finished = results.length;
+    const finished = settled;
     const errors = results.filter((item) => item.error).length;
     $('#result-summary').textContent = results.map((item) =>
       item.error ? item.name + ': ошибка' : item.name + ': ' + item.count
@@ -382,7 +383,7 @@ async function loadData() {
     tasks.push(Promise.resolve(promise)
       .then((count) => ({ name, count }))
       .catch((error) => error.name === 'AbortError' ? ({ name, cancelled: true }) : ({ name, error: error.message }))
-      .then((result) => { if (!result.cancelled) results.push(result); updateProgress(); }));
+      .then((result) => { settled += 1; if (!result.cancelled) results.push(result); updateProgress(); }));
   };
   if (state.layers.earthquakes) addTask('USGS', loadEarthquakes());
   if (state.layers.weather) addTask('Open-Meteo', loadWeather());
