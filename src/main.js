@@ -239,7 +239,7 @@ async function loadData() {
   const tasks = [];
   if (state.layers.earthquakes) tasks.push(loadEarthquakes().then((n) => ({ name: 'USGS', count: n })).catch((e) => ({ name: 'USGS', error: e.message })));
   if (state.layers.weather) tasks.push(loadWeather().then((n) => ({ name: 'Open-Meteo', count: n })).catch((e) => ({ name: 'Open-Meteo', error: e.message })));
-  if (state.layers.osm) tasks.push(loadOsmPlaces().then((n) => ({ name: 'OpenStreetMap', count: n })).catch((e) => ({ name: 'OpenStreetMap', error: e.message })));
+  if (state.layers.osm) tasks.push(loadOsmPlaces().then((n) => ({ name: 'OpenStreetMap', count: n })).catch((e) => e.name === 'AbortError' ? ({ name: 'OpenStreetMap', cancelled: true }) : ({ name: 'OpenStreetMap', error: e.message })));
   const results = await Promise.all(tasks);
   state.lastUpdated = new Date();
   $('#last-updated').textContent = 'Проверено в ' + formatTime(state.lastUpdated);
@@ -279,7 +279,7 @@ function renderResults() {
   }
   $('#results').innerHTML = list.slice(0, 35).map((f) => {
     const icon = f.type === 'earthquake' ? '⌁' : f.type === 'weather' ? '☼' : '⌂';
-    const label = f.type === 'earthquake' ? 'НАУЧНЫЕ ДАННЫЕ' : f.type === 'weather' ? 'ТЕКУЩИЕ УСЛОВИЯ' : 'ИСТОРИЯ И МЕСТА';
+    const label = f.type === 'earthquake' ? 'НАУЧНЫЕ ДАННЫЕ' : f.type === 'weather' ? 'ТЕКУЩИЕ УСЛОВИЯ' : (f.category || 'ИСТОРИЯ И МЕСТА').toLocaleUpperCase('ru-RU');
     const distance = f.distance < 1 ? Math.round(f.distance * 1000) + ' м' : f.distance.toFixed(1) + ' км';
     const saved = new Set(JSON.parse(localStorage.getItem('nu-saved') || '[]'));
     const isSaved = saved.has(f.id);
@@ -319,14 +319,23 @@ $('#layers-button').addEventListener('click', () => $('#layers-panel').classList
 $('#close-layers').addEventListener('click', () => $('#layers-panel').classList.add('hidden'));
 $('#refresh-button').addEventListener('click', loadData);
 $('#layers-panel').querySelectorAll('[data-layer]').forEach((input) => input.addEventListener('change', () => {
-  state.layers[input.dataset.layer] = input.checked;
-  if (input.dataset.layer === 'osm' && input.checked) loadData();
-  else if (input.dataset.layer === 'earthquakes' && map.getLayer('earthquakes-points')) map.setLayoutProperty('earthquakes-points', 'visibility', input.checked ? 'visible' : 'none');
-  if (input.dataset.layer === 'earthquakes' && map.getLayer('earthquakes-glow')) map.setLayoutProperty('earthquakes-glow', 'visibility', input.checked ? 'visible' : 'none');
-  if (input.dataset.layer === 'osm' && map.getLayer('osm-places-points')) map.setLayoutProperty('osm-places-points', 'visibility', input.checked ? 'visible' : 'none');
-  if (input.dataset.layer === 'weather' && map.getLayer('weather-point-marker')) map.setLayoutProperty('weather-point-marker', 'visibility', input.checked ? 'visible' : 'none');
-  if (!input.checked) { state.features = state.features.filter((f) => f.type !== (input.dataset.layer === 'earthquakes' ? 'earthquake' : input.dataset.layer === 'weather' ? 'weather' : 'osm')); renderResults(); }
-  else loadData();
+  const key = input.dataset.layer;
+  state.layers[key] = input.checked;
+  const layerIds = key === 'earthquakes' ? ['earthquakes-points', 'earthquakes-glow']
+    : key === 'weather' ? ['weather-point-marker']
+    : ['osm-places-points'];
+  layerIds.forEach((id) => {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', input.checked ? 'visible' : 'none');
+  });
+  if (!input.checked) {
+    if (key === 'osm' && state.placesController) state.placesController.abort();
+    const type = key === 'earthquakes' ? 'earthquake' : key === 'weather' ? 'weather' : 'osm';
+    state.features = state.features.filter((f) => f.type !== type);
+    if (key === 'osm' && map.getSource('osm-places')) map.getSource('osm-places').setData(emptyCollection());
+    renderResults();
+  } else {
+    loadData();
+  }
 }));
 document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => {
   state.filter = button.dataset.filter;
