@@ -103,7 +103,7 @@ function installSecondaryLayers() {
   if (!map.getSource('osm-places')) map.addSource('osm-places', { type: 'geojson', data: emptyCollection() });
   if (!map.getLayer('osm-places-polygons')) map.addLayer({
     id: 'osm-places-polygons', type: 'fill', source: 'osm-places',
-    filter: ['==', ['geometry-type'], 'Polygon'],
+    filter: ['in', ['geometry-type'], ['literal', ['Polygon', 'MultiPolygon']]],
     paint: { 'fill-color': '#66fcf1', 'fill-opacity': 0.18 }
   });
   if (!map.getLayer('osm-places-outlines')) map.addLayer({
@@ -193,6 +193,72 @@ async function loadWeather() {
   return 1;
 }
 
+function ringArea(ring) {
+  let area = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) area += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  return area / 2;
+}
+function sameCoord(a, b) { return a && b && Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) < 1e-7; }
+function pointInRing(point, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    const crosses = ((yi > point[1]) !== (yj > point[1])) && (point[0] < (xj - xi) * (point[1] - yi) / ((yj - yi) || 1e-12) + xi);
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+function joinMemberRings(members, role) {
+  const chains = (members || []).filter((member) => (member.role || 'outer') === role)
+    .map((member) => (member.geometry || []).filter((p) => Number.isFinite(p.lon) && Number.isFinite(p.lat)).map((p) => [p.lon, p.lat]))
+    .filter((ring) => ring.length >= 2);
+  const rings = [];
+  while (chains.length) {
+    const ring = chains.shift();
+    let changed = true;
+    while (changed && !sameCoord(ring[0], ring[ring.length - 1])) {
+      changed = false;
+      for (let i = 0; i < chains.length; i++) {
+        const next = chains[i];
+        if (sameCoord(ring[ring.length - 1], next[0])) ring.push(...next.slice(1));
+        else if (sameCoord(ring[ring.length - 1], next[next.length - 1])) ring.push(...next.slice(0, -1).reverse());
+        else if (sameCoord(ring[0], next[next.length - 1])) ring.unshift(...next.slice(0, -1));
+        else if (sameCoord(ring[0], next[0])) ring.unshift(...next.slice(1).reverse());
+        else continue;
+        chains.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+    if (ring.length >= 4 && sameCoord(ring[0], ring[ring.length - 1])) rings.push(ring);
+  }
+  return rings;
+}
+function osmGeometry(item, tags) {
+  if (item.type === 'relation' && Array.isArray(item.members)) {
+    const outers = joinMemberRings(item.members, 'outer');
+    const inners = joinMemberRings(item.members, 'inner');
+    if (outers.length) {
+      const polygons = outers.map((outer) => [outer]);
+      inners.forEach((inner) => {
+        const index = outers.findIndex((outer) => pointInRing(inner[0], outer));
+        if (index >= 0) polygons[index].push(inner);
+      });
+      return { type: polygons.length === 1 ? 'Polygon' : 'MultiPolygon', coordinates: polygons.length === 1 ? polygons[0] : polygons };
+    }
+  }
+  const points = Array.isArray(item.geometry) ? item.geometry
+    .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
+    .map((point) => [point.lon, point.lat]) : [];
+  if (points.length >= 4 && sameCoord(points[0], points[points.length - 1])) {
+    const areaKeys = tags.area === 'yes' || tags.building || tags.historic || tags.leisure || tags.landuse ||
+      tags.natural === 'water' || tags.natural === 'wood' || tags.natural === 'heath' ||
+      ['attraction', 'museum', 'gallery'].includes(tags.tourism) ||
+      ['museum', 'arts_centre'].includes(tags.amenity);
+    if (areaKeys) return { type: 'Polygon', coordinates: [points] };
+  }
+  return null;
+}
 async function loadOsmPlaces() {
   if (!state.layers.osm) return 0;
   if (state.placesController) state.placesController.abort();
@@ -212,7 +278,7 @@ async function loadOsmPlaces() {
     'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
-    ' );out geom tags 250;';
+    ' );out geom 250;';
   const response = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     signal: controller.signal,
@@ -227,13 +293,7 @@ async function loadOsmPlaces() {
     const points = Array.isArray(item.geometry) ? item.geometry
       .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
       .map((point) => [point.lon, point.lat]) : [];
-    const isClosed = points.length >= 4 && points[0][0] === points[points.length - 1][0] && points[0][1] === points[points.length - 1][1];
-    const likelyArea = isClosed && (
-      tags.area === 'yes' || tags.building || tags.historic || tags.leisure || tags.landuse ||
-      tags.natural === 'water' || tags.natural === 'wood' || tags.natural === 'heath' ||
-      tags.tourism === 'attraction' || tags.tourism === 'museum' || tags.tourism === 'gallery' ||
-      tags.amenity === 'museum' || tags.amenity === 'arts_centre'
-    );
+    const geometry = osmGeometry(item, tags);
     const lon = item.lon ?? item.center?.lon ?? (points.length ? points.reduce((sum, point) => sum + point[0], 0) / points.length : undefined);
     const lat = item.lat ?? item.center?.lat ?? (points.length ? points.reduce((sum, point) => sum + point[1], 0) / points.length : undefined);
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
@@ -257,7 +317,7 @@ async function loadOsmPlaces() {
       category,
       detail: String(detail),
       coords: [lon, lat],
-      geometry: likelyArea ? { type: 'Polygon', coordinates: [points] } : null,
+      geometry,
       source: 'OpenStreetMap',
       url: 'https://www.openstreetmap.org/' + item.type + '/' + item.id,
       updated: Date.now()
