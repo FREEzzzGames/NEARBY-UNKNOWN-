@@ -16,7 +16,9 @@ const state = {
   activeTab: 'map',
   placesController: null,
   placesRequestId: 0,
-  placesMoveTimer: null
+  placesMoveTimer: null,
+  osmCache: new Map(),
+  osmLastKey: null
 };
 
 const themes = [
@@ -273,36 +275,70 @@ function osmGeometry(item, tags) {
   }
   return null;
 }
-async function loadOsmPlaces() {
+async function loadOsmPlaces({ force = false } = {}) {
   if (!state.layers.osm) return 0;
+  const zoom = map.getZoom();
+  if (zoom < 8) {
+    $('#map-status-text').textContent = 'Приблизь карту, чтобы загрузить места';
+    return 0;
+  }
+
+  // Quantize the viewport so tiny touch/pan movements reuse the same request/cache.
+  const bounds = map.getBounds();
+  const southN = Math.max(-85, Math.floor(bounds.getSouth() * 100) / 100);
+  const westN = Math.max(-180, Math.floor(bounds.getWest() * 100) / 100);
+  const northN = Math.min(85, Math.ceil(bounds.getNorth() * 100) / 100);
+  const eastN = Math.min(180, Math.ceil(bounds.getEast() * 100) / 100);
+  if (northN <= southN || eastN <= westN) return 0;
+
+  // Avoid asking the public Overpass instances for continent-sized results.
+  const latSpan = northN - southN;
+  const lonSpan = eastN - westN;
+  if (latSpan > 5 || lonSpan > 5 || latSpan * lonSpan > 12) {
+    $('#map-status-text').textContent = 'Приблизь карту для поиска мест в этой области';
+    return 0;
+  }
+
+  const bbox = [southN, westN, northN, eastN].join(',');
+  const cacheKey = Math.round(zoom) + ':' + bbox;
+  const now = Date.now();
+  const cached = state.osmCache.get(cacheKey);
+  if (!force && cached && now - cached.time < 5 * 60 * 1000) {
+    state.features = state.features.filter((f) => f.type !== 'osm').concat(cached.features);
+    state.osmLastKey = cacheKey;
+    syncSecondaryLayerData();
+    renderResults();
+    $('#map-status-text').textContent = 'Места из кэша: ' + cached.features.length;
+    return cached.features.length;
+  }
+  if (!force && state.osmLastKey === cacheKey && state.placesController) return 0;
+
   if (state.placesController) state.placesController.abort();
   const controller = new AbortController();
   state.placesController = controller;
   const requestId = ++state.placesRequestId;
-  const bounds = map.getBounds();
-  if (map.getZoom() < 8) { $('#map-status-text').textContent = 'Приблизь карту, чтобы загрузить места'; return 0; }
-  const south = Math.max(-85, bounds.getSouth()).toFixed(5);
-  const west = Math.max(-180, bounds.getWest()).toFixed(5);
-  const north = Math.min(85, bounds.getNorth()).toFixed(5);
-  const east = Math.min(180, bounds.getEast()).toFixed(5);
-  const bbox = south + ',' + west + ',' + north + ',' + east;
-  const query = '[out:json][timeout:8];(' +
-    'nwr[' + '"name"' + '][' + '"historic"' + '](' + bbox + ');' +
-    'nwr[' + '"name"' + '][' + '"tourism"~"museum|attraction|artwork|viewpoint|gallery"' + '](' + bbox + ');' +
-    'nwr[' + '"name"' + '][' + '"amenity"~"museum|arts_centre|theatre|planetarium"' + '](' + bbox + ');' +
-    'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
-    'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
-    'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
-    ' );out center 150;';
+  state.osmLastKey = cacheKey;
+  const query = '[out:json][timeout:10];(' +
+    'nwr["name"]["historic"](' + bbox + ');' +
+    'nwr["name"]["tourism"~"museum|attraction|artwork|viewpoint|gallery"](' + bbox + ');' +
+    'nwr["name"]["amenity"~"museum|arts_centre|theatre|planetarium"](' + bbox + ');' +
+    'nwr["name"]["leisure"~"park|nature_reserve|garden"](' + bbox + ');' +
+    'nwr["name"]["natural"~"cave_entrance|peak|volcano|spring"](' + bbox + ');' +
+    'nwr["name"]["man_made"~"lighthouse|observatory|water_tower"](' + bbox + ');' +
+    ');out center 120;';
   $('#map-status-text').textContent = 'Загружаем места на карте…';
+
   let data;
   let lastError;
-  for (const endpoint of [
+  const endpoints = [
     'https://overpass-api.de/api/interpreter',
     'https://overpass.kumi.systems/api/interpreter',
     'https://overpass.private.coffee/api/interpreter'
-  ]) {
+  ];
+  for (const endpoint of endpoints) {
+    let timer;
     try {
+      timer = setTimeout(() => controller.abort(), 14000);
       const response = await fetch(endpoint, {
         method: 'POST',
         signal: controller.signal,
@@ -313,21 +349,34 @@ async function loadOsmPlaces() {
       data = await response.json();
       break;
     } catch (error) {
-      if (error.name === 'AbortError') throw error;
+      if (controller.signal.aborted || error.name === 'AbortError') {
+        if (requestId !== state.placesRequestId) return 0;
+        throw error;
+      }
       lastError = error;
+    } finally {
+      clearTimeout(timer);
     }
   }
-  if (!data) throw (lastError || new Error('Все источники OpenStreetMap недоступны'));
+  if (!data) {
+    if (requestId === state.placesRequestId) state.osmLastKey = null;
+    throw (lastError || new Error('Все источники OpenStreetMap недоступны'));
+  }
   if (requestId !== state.placesRequestId || controller.signal.aborted) return 0;
+
+  const seen = new Set();
   const features = (data.elements || []).map((item) => {
     const tags = item.tags || {};
+    const geometry = osmGeometry(item, tags);
     const points = Array.isArray(item.geometry) ? item.geometry
       .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
       .map((point) => [point.lon, point.lat]) : [];
-    const geometry = osmGeometry(item, tags);
     const lon = item.lon ?? item.center?.lon ?? (points.length ? points.reduce((sum, point) => sum + point[0], 0) / points.length : undefined);
     const lat = item.lat ?? item.center?.lat ?? (points.length ? points.reduce((sum, point) => sum + point[1], 0) / points.length : undefined);
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+    const id = 'osm-' + item.type + '-' + item.id;
+    if (seen.has(id)) return null;
+    seen.add(id);
     const category = tags.historic ? 'Историческое место'
       : tags.tourism === 'museum' || tags.amenity === 'museum' ? 'Музей'
       : tags.amenity === 'theatre' ? 'Театр'
@@ -340,22 +389,22 @@ async function loadOsmPlaces() {
       : tags.tourism === 'attraction' ? 'Достопримечательность'
       : tags.tourism === 'artwork' ? 'Объект искусства'
       : 'Интересное место';
-    const detail = tags.description || tags['description:ru'] || tags.historic || tags.tourism || tags.amenity || tags.leisure || tags.natural || tags.man_made || 'Открытые геоданные OpenStreetMap';
+    const detail = tags['description:ru'] || tags.description || tags.historic || tags.tourism || tags.amenity || tags.leisure || tags.natural || tags.man_made || 'Открытые геоданные OpenStreetMap';
     return {
-      id: 'osm-' + item.type + '-' + item.id,
-      type: 'osm',
-      title: tags.name || tags['name:ru'] || category,
-      category,
-      detail: String(detail),
-      coords: [lon, lat],
-      geometry,
+      id, type: 'osm',
+      title: tags['name:ru'] || tags.name || category,
+      category, detail: String(detail), coords: [lon, lat], geometry,
       source: 'OpenStreetMap',
       url: 'https://www.openstreetmap.org/' + item.type + '/' + item.id,
-      updated: Date.now()
+      updated: now
     };
   }).filter(Boolean);
+
   if (requestId !== state.placesRequestId) return 0;
   state.features = state.features.filter((f) => f.type !== 'osm').concat(features);
+  state.osmCache.set(cacheKey, { time: Date.now(), features });
+  // Keep memory bounded on long mobile sessions.
+  while (state.osmCache.size > 16) state.osmCache.delete(state.osmCache.keys().next().value);
   syncSecondaryLayerData();
   renderResults();
   $('#map-status-text').textContent = 'Места на карте: ' + features.length;
