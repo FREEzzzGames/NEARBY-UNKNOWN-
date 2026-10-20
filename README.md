@@ -8,7 +8,7 @@ Personal research map for discovering unusual places, historical traces, scienti
 - Layer controls with independent source loading.
 - Live earthquake feed from the USGS public GeoJSON feed.
 - Current weather from Open-Meteo.
-- Optional historical/tourism objects from OpenStreetMap via Overpass.
+- Named places from OpenStreetMap via Overpass, queried for the visible map bounds: historic sites, museums, attractions, viewpoints, galleries, theatres, parks, nature reserves, selected natural and infrastructure landmarks. Place markers open an object card and link to the source.
 - Search by place name or coordinates.
 - Explicit user-triggered geolocation.
 - Local interests and favorites stored on the device.

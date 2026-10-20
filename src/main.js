@@ -10,7 +10,10 @@ const state = {
   layers: { earthquakes: true, weather: true, osm: false },
   lastUpdated: null,
   mapReady: false,
-  activeTab: 'map'
+  activeTab: 'map',
+  placesController: null,
+  placesRequestId: 0,
+  placesMoveTimer: null
 };
 
 const themes = [
@@ -62,6 +65,24 @@ map.on('load', () => {
   });
   map.on('mouseenter', 'earthquakes-points', () => { map.getCanvas().style.cursor = 'pointer'; });
   map.on('mouseleave', 'earthquakes-points', () => { map.getCanvas().style.cursor = ''; });
+  map.on('click', 'osm-places-points', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    const p = feature.properties || {};
+    const link = safeUrl(p.url);
+    const details = [p.category, p.detail].filter(Boolean).map(escapeHtml).join(' · ');
+    new maplibregl.Popup({ closeButton: true, maxWidth: '300px' })
+      .setLngLat(event.lngLat)
+      .setHTML('<div class="popup-card"><span class="eyebrow">OPENSTREETMAP · МЕСТО</span><strong>' + escapeHtml(p.title || 'Без названия') + '</strong><p>' + (details || 'Категория не указана') + '</p>' + (link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть объект в OpenStreetMap ↗</a></p>' : '') + '<small>Координаты: ' + event.lngLat.lat.toFixed(5) + ', ' + event.lngLat.lng.toFixed(5) + '</small></div>')
+      .addTo(map);
+  });
+  map.on('mouseenter', 'osm-places-points', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'osm-places-points', () => { map.getCanvas().style.cursor = ''; });
+  map.on('moveend', () => {
+    if (!state.layers.osm || !state.mapReady) return;
+    clearTimeout(state.placesMoveTimer);
+    state.placesMoveTimer = setTimeout(() => loadOsmPlaces().catch(() => {}), 450);
+  });
   loadData();
 });
 
@@ -83,7 +104,7 @@ function installSecondaryLayers() {
 function syncSecondaryLayerData() {
   const osm = state.features.filter((f) => f.type === 'osm').map((f) => ({
     type: 'Feature', geometry: { type: 'Point', coordinates: f.coords },
-    properties: { id: f.id, title: f.title, detail: f.detail, source: f.source, url: f.url }
+    properties: { id: f.id, title: f.title, detail: f.detail, category: f.category || '', source: f.source, url: f.url }
   }));
   const weather = state.features.filter((f) => f.type === 'weather').map((f) => ({
     type: 'Feature', geometry: { type: 'Point', coordinates: f.coords },
@@ -146,21 +167,69 @@ async function loadWeather() {
 }
 
 async function loadOsmPlaces() {
-  const center = map.getCenter();
-  const query = '[out:json][timeout:10];(node(around:5000,' + center.lat + ',' + center.lng + ')["historic"];way(around:5000,' + center.lat + ',' + center.lng + ')["historic"];node(around:5000,' + center.lat + ',' + center.lng + ')["tourism"~"museum|attraction"];);out center tags 40;';
+  if (!state.layers.osm) return 0;
+  if (state.placesController) state.placesController.abort();
+  const controller = new AbortController();
+  state.placesController = controller;
+  const requestId = ++state.placesRequestId;
+  const bounds = map.getBounds();
+  const south = Math.max(-85, bounds.getSouth()).toFixed(5);
+  const west = Math.max(-180, bounds.getWest()).toFixed(5);
+  const north = Math.min(85, bounds.getNorth()).toFixed(5);
+  const east = Math.min(180, bounds.getEast()).toFixed(5);
+  const bbox = south + ',' + west + ',' + north + ',' + east;
+  const query = '[out:json][timeout:15];(' +
+    'nwr[' + '"name"' + '][' + '"historic"' + '](' + bbox + ');' +
+    'nwr[' + '"name"' + '][' + '"tourism"~"museum|attraction|artwork|viewpoint|gallery"' + '](' + bbox + ');' +
+    'nwr[' + '"name"' + '][' + '"amenity"~"museum|arts_centre|theatre|planetarium"' + '](' + bbox + ');' +
+    'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
+    'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
+    'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
+    ');out center tags 250;';
   const response = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: query
+    method: 'POST',
+    signal: controller.signal,
+    headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Accept': 'application/json' },
+    body: query
   });
   if (!response.ok) throw new Error('Overpass HTTP ' + response.status);
   const data = await response.json();
+  if (requestId !== state.placesRequestId || controller.signal.aborted) return 0;
   const features = (data.elements || []).map((item) => {
-    const lon = item.lon ?? item.center?.lon, lat = item.lat ?? item.center?.lat;
+    const lon = item.lon ?? item.center?.lon;
+    const lat = item.lat ?? item.center?.lat;
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
     const tags = item.tags || {};
-    return { id: 'osm-' + item.type + '-' + item.id, type: 'osm', title: tags.name || tags.historic || tags.tourism || 'Исторический объект', detail: tags.description || tags.historic || tags.tourism || 'Объект из OpenStreetMap', coords: [lon, lat], source: 'OpenStreetMap', url: 'https://www.openstreetmap.org/' + item.type + '/' + item.id, updated: Date.now() };
+    const category = tags.historic ? 'Историческое место'
+      : tags.tourism === 'museum' || tags.amenity === 'museum' ? 'Музей'
+      : tags.amenity === 'theatre' ? 'Театр'
+      : tags.tourism === 'viewpoint' ? 'Смотровая площадка'
+      : tags.tourism === 'gallery' || tags.amenity === 'arts_centre' ? 'Искусство и культура'
+      : tags.leisure === 'park' || tags.leisure === 'garden' ? 'Парк или сад'
+      : tags.leisure === 'nature_reserve' ? 'Природная территория'
+      : tags.natural ? 'Природный объект'
+      : tags.man_made ? 'Инфраструктурный объект'
+      : tags.tourism === 'attraction' ? 'Достопримечательность'
+      : tags.tourism === 'artwork' ? 'Объект искусства'
+      : 'Интересное место';
+    const detail = tags.description || tags['description:ru'] || tags.historic || tags.tourism || tags.amenity || tags.leisure || tags.natural || tags.man_made || 'Открытые геоданные OpenStreetMap';
+    return {
+      id: 'osm-' + item.type + '-' + item.id,
+      type: 'osm',
+      title: tags.name || tags['name:ru'] || category,
+      category,
+      detail: String(detail),
+      coords: [lon, lat],
+      source: 'OpenStreetMap',
+      url: 'https://www.openstreetmap.org/' + item.type + '/' + item.id,
+      updated: Date.now()
+    };
   }).filter(Boolean);
+  if (requestId !== state.placesRequestId) return 0;
   state.features = state.features.filter((f) => f.type !== 'osm').concat(features);
   syncSecondaryLayerData();
+  renderResults();
+  $('#map-status-text').textContent = 'Места на видимой области: ' + features.length;
   return features.length;
 }
 
@@ -170,7 +239,7 @@ async function loadData() {
   const tasks = [];
   if (state.layers.earthquakes) tasks.push(loadEarthquakes().then((n) => ({ name: 'USGS', count: n })).catch((e) => ({ name: 'USGS', error: e.message })));
   if (state.layers.weather) tasks.push(loadWeather().then((n) => ({ name: 'Open-Meteo', count: n })).catch((e) => ({ name: 'Open-Meteo', error: e.message })));
-  if (state.layers.osm) tasks.push(loadOsmPlaces().then((n) => ({ name: 'OpenStreetMap', count: n })).catch((e) => ({ name: 'OpenStreetMap', error: e.message })));
+  if (state.layers.osm) tasks.push(loadOsmPlaces().then((n) => ({ name: 'OpenStreetMap', count: n })).catch((e) => e.name === 'AbortError' ? ({ name: 'OpenStreetMap', cancelled: true }) : ({ name: 'OpenStreetMap', error: e.message })));
   const results = await Promise.all(tasks);
   state.lastUpdated = new Date();
   $('#last-updated').textContent = 'Проверено в ' + formatTime(state.lastUpdated);
@@ -210,7 +279,7 @@ function renderResults() {
   }
   $('#results').innerHTML = list.slice(0, 35).map((f) => {
     const icon = f.type === 'earthquake' ? '⌁' : f.type === 'weather' ? '☼' : '⌂';
-    const label = f.type === 'earthquake' ? 'НАУЧНЫЕ ДАННЫЕ' : f.type === 'weather' ? 'ТЕКУЩИЕ УСЛОВИЯ' : 'ИСТОРИЯ И МЕСТА';
+    const label = f.type === 'earthquake' ? 'НАУЧНЫЕ ДАННЫЕ' : f.type === 'weather' ? 'ТЕКУЩИЕ УСЛОВИЯ' : (f.category || 'ИСТОРИЯ И МЕСТА').toLocaleUpperCase('ru-RU');
     const distance = f.distance < 1 ? Math.round(f.distance * 1000) + ' м' : f.distance.toFixed(1) + ' км';
     const saved = new Set(JSON.parse(localStorage.getItem('nu-saved') || '[]'));
     const isSaved = saved.has(f.id);
@@ -250,14 +319,23 @@ $('#layers-button').addEventListener('click', () => $('#layers-panel').classList
 $('#close-layers').addEventListener('click', () => $('#layers-panel').classList.add('hidden'));
 $('#refresh-button').addEventListener('click', loadData);
 $('#layers-panel').querySelectorAll('[data-layer]').forEach((input) => input.addEventListener('change', () => {
-  state.layers[input.dataset.layer] = input.checked;
-  if (input.dataset.layer === 'osm' && input.checked) loadData();
-  else if (input.dataset.layer === 'earthquakes' && map.getLayer('earthquakes-points')) map.setLayoutProperty('earthquakes-points', 'visibility', input.checked ? 'visible' : 'none');
-  if (input.dataset.layer === 'earthquakes' && map.getLayer('earthquakes-glow')) map.setLayoutProperty('earthquakes-glow', 'visibility', input.checked ? 'visible' : 'none');
-  if (input.dataset.layer === 'osm' && map.getLayer('osm-places-points')) map.setLayoutProperty('osm-places-points', 'visibility', input.checked ? 'visible' : 'none');
-  if (input.dataset.layer === 'weather' && map.getLayer('weather-point-marker')) map.setLayoutProperty('weather-point-marker', 'visibility', input.checked ? 'visible' : 'none');
-  if (!input.checked) { state.features = state.features.filter((f) => f.type !== (input.dataset.layer === 'earthquakes' ? 'earthquake' : input.dataset.layer === 'weather' ? 'weather' : 'osm')); renderResults(); }
-  else loadData();
+  const key = input.dataset.layer;
+  state.layers[key] = input.checked;
+  const layerIds = key === 'earthquakes' ? ['earthquakes-points', 'earthquakes-glow']
+    : key === 'weather' ? ['weather-point-marker']
+    : ['osm-places-points'];
+  layerIds.forEach((id) => {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', input.checked ? 'visible' : 'none');
+  });
+  if (!input.checked) {
+    if (key === 'osm' && state.placesController) state.placesController.abort();
+    const type = key === 'earthquakes' ? 'earthquake' : key === 'weather' ? 'weather' : 'osm';
+    state.features = state.features.filter((f) => f.type !== type);
+    if (key === 'osm' && map.getSource('osm-places')) map.getSource('osm-places').setData(emptyCollection());
+    renderResults();
+  } else {
+    loadData();
+  }
 }));
 document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => {
   state.filter = button.dataset.filter;
