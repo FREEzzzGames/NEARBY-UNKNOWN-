@@ -92,9 +92,20 @@ map.on('load', () => {
     map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
   });
   map.on('moveend', () => {
-    if (!state.layers.osm || !state.mapReady) return;
+    if (!state.mapReady) return;
     clearTimeout(state.placesMoveTimer);
-    state.placesMoveTimer = setTimeout(() => loadOsmPlaces().catch((error) => { if (error.name !== 'AbortError') $('#map-status-text').textContent = 'Места временно недоступны'; }), 900);
+    state.placesMoveTimer = setTimeout(() => {
+      const tasks = [];
+      if (state.layers.weather) tasks.push(loadWeather().catch(() => null));
+      if (state.layers.osm) tasks.push(loadOsmPlaces().catch((error) => {
+        if (error.name !== 'AbortError') {
+          $('#map-status-text').textContent = 'Места временно недоступны';
+          showToast('Источник мест временно недоступен; карта и остальные слои продолжают работать');
+        }
+        return null;
+      }));
+      Promise.all(tasks).then(() => renderResults());
+    }, 250);
   });
   loadData();
 });
@@ -281,14 +292,29 @@ async function loadOsmPlaces() {
     'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
     ' );out center 150;';
   $('#map-status-text').textContent = 'Загружаем места на карте…';
-  const response = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    signal: controller.signal,
-    headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Accept': 'application/json' },
-    body: query
-  });
-  if (!response.ok) throw new Error('Overpass HTTP ' + response.status);
-  const data = await response.json();
+  let data;
+  let lastError;
+  for (const endpoint of [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter'
+  ]) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Accept': 'application/json' },
+        body: query
+      });
+      if (!response.ok) throw new Error('Overpass HTTP ' + response.status);
+      data = await response.json();
+      break;
+    } catch (error) {
+      if (error.name === 'AbortError') throw error;
+      lastError = error;
+    }
+  }
+  if (!data) throw (lastError || new Error('Все источники OpenStreetMap недоступны'));
   if (requestId !== state.placesRequestId || controller.signal.aborted) return 0;
   const features = (data.elements || []).map((item) => {
     const tags = item.tags || {};
@@ -335,21 +361,72 @@ async function loadOsmPlaces() {
 
 async function loadData() {
   $('#refresh-button').classList.add('spinning');
-  $('#map-status-text').textContent = 'Обновление открытых источников…';
+  $('#map-status-text').textContent = 'Обновляем источники параллельно…';
+  const results = [];
   const tasks = [];
-  if (state.layers.earthquakes) tasks.push(loadEarthquakes().then((n) => ({ name: 'USGS', count: n })).catch((e) => ({ name: 'USGS', error: e.message })));
-  if (state.layers.weather) tasks.push(loadWeather().then((n) => ({ name: 'Open-Meteo', count: n })).catch((e) => ({ name: 'Open-Meteo', error: e.message })));
-  if (state.layers.osm) tasks.push(loadOsmPlaces().then((n) => ({ name: 'OpenStreetMap', count: n })).catch((e) => e.name === 'AbortError' ? ({ name: 'OpenStreetMap', cancelled: true }) : ({ name: 'OpenStreetMap', error: e.message })));
-  const results = await Promise.all(tasks);
-  state.lastUpdated = new Date();
-  $('#last-updated').textContent = 'Проверено в ' + formatTime(state.lastUpdated);
-  const failed = results.filter((r) => r.error);
-  $('#map-status-text').textContent = failed.length ? 'Часть источников недоступна' : 'Источники проверены';
-  $('#result-summary').textContent = results.map((r) => r.error ? r.name + ': ошибка' : r.name + ': ' + r.count).join(' · ') || 'Все слои выключены';
-  $('#refresh-button').classList.remove('spinning');
-  renderResults();
+  const updateProgress = () => {
+    const finished = results.length;
+    const errors = results.filter((item) => item.error).length;
+    $('#result-summary').textContent = results.map((item) =>
+      item.error ? item.name + ': ошибка' : item.name + ': ' + item.count
+    ).join(' · ') || 'Получаем первые данные…';
+    if (finished) renderResults();
+    if (finished === tasks.length) {
+      state.lastUpdated = new Date();
+      $('#last-updated').textContent = 'Проверено в ' + formatTime(state.lastUpdated);
+      $('#map-status-text').textContent = errors ? 'Часть источников недоступна' : 'Источники проверены';
+      $('#refresh-button').classList.remove('spinning');
+    }
+  };
+  const addTask = (name, promise) => {
+    tasks.push(Promise.resolve(promise)
+      .then((count) => ({ name, count }))
+      .catch((error) => error.name === 'AbortError' ? ({ name, cancelled: true }) : ({ name, error: error.message }))
+      .then((result) => { if (!result.cancelled) results.push(result); updateProgress(); }));
+  };
+  if (state.layers.earthquakes) addTask('USGS', loadEarthquakes());
+  if (state.layers.weather) addTask('Open-Meteo', loadWeather());
+  if (state.layers.osm) addTask('OpenStreetMap', loadOsmPlaces());
+  if (!tasks.length) {
+    $('#result-summary').textContent = 'Все слои выключены';
+    $('#map-status-text').textContent = 'Включи хотя бы один слой';
+    $('#refresh-button').classList.remove('spinning');
+    renderResults();
+    return;
+  }
+  await Promise.all(tasks);
 }
 
+function selectFeatureOnMap(feature) {
+  if (!feature || !Array.isArray(feature.coords)) {
+    showToast('У этого объекта нет координат для отображения');
+    return;
+  }
+  const lng = Number(feature.coords[0]);
+  const lat = Number(feature.coords[1]);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat) || Math.abs(lng) > 180 || Math.abs(lat) > 90) {
+    showToast('Координаты объекта некорректны');
+    return;
+  }
+  $('#discover-panel').classList.remove('panel-expanded');
+  document.body.dataset.tab = 'map';
+  document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.tab === 'map'));
+  state.activeTab = 'map';
+  requestAnimationFrame(() => {
+    map.resize();
+    map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 14), speed: 0.85, essential: true });
+    const title = escapeHtml(feature.title || 'Объект без названия');
+    const source = escapeHtml(feature.source || 'Источник не указан');
+    const details = [feature.category, feature.detail].filter(Boolean).map(escapeHtml).join(' · ');
+    const link = safeUrl(feature.url);
+    const coordinates = lat.toFixed(5) + ', ' + lng.toFixed(5);
+    const externalLink = link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть первоисточник ↗</a></p>' : '';
+    const popup = new maplibregl.Popup({ closeButton: true, maxWidth: '300px', offset: 12 })
+      .setLngLat([lng, lat])
+      .setHTML('<div class="popup-card"><span class="eyebrow">' + source + '</span><strong>' + title + '</strong><p>' + (details || 'Описание отсутствует') + '</p><small>Координаты: ' + coordinates + '</small>' + externalLink + '</div>');
+    map.once('moveend', () => popup.addTo(map));
+  });
+}
 function readSavedItems() {
   try {
     const value = JSON.parse(localStorage.getItem('nu-saved-items') || '{}');
@@ -388,18 +465,7 @@ function renderResults() {
     const activate = () => {
       const f = state.features.find((item) => item.id === card.dataset.id) || readSavedItems()[card.dataset.id];
       if (!f || !Array.isArray(f.coords) || !Number.isFinite(f.coords[0]) || !Number.isFinite(f.coords[1])) return;
-      $('#discover-panel').classList.remove('panel-expanded');
-      document.body.dataset.tab = 'map';
-      document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === 'map'));
-      state.activeTab = 'map';
-      map.resize();
-      map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 14), speed: 0.75, essential: true });
-      const details = [f.category, f.detail].filter(Boolean).map(escapeHtml).join(' · ');
-      const link = safeUrl(f.url);
-      new maplibregl.Popup({ closeButton: true, maxWidth: '300px' })
-        .setLngLat(f.coords)
-        .setHTML('<div class="popup-card"><span class="eyebrow">СОХРАНЁННОЕ МЕСТО · ' + escapeHtml(f.source || 'Источник не указан') + '</span><strong>' + escapeHtml(f.title || 'Без названия') + '</strong><p>' + (details || 'Описание отсутствует') + '</p>' + (link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть первоисточник ↗</a></p>' : '') + '</div>')
-        .addTo(map);
+      selectFeatureOnMap(f);
     };
     card.addEventListener('click', (event) => { if (!event.target.closest('[data-save]')) activate(); });
     card.addEventListener('keydown', (event) => { if (event.key === 'Enter') activate(); });
@@ -489,7 +555,8 @@ $('#locate-button').addEventListener('click', () => {
   if (!navigator.geolocation) return showToast('Геолокация не поддерживается этим браузером');
   navigator.geolocation.getCurrentPosition((position) => {
     map.flyTo({ center: [position.coords.longitude, position.coords.latitude], zoom: 12 });
-    loadData();
+    if (state.layers.weather) loadWeather().then(() => renderResults()).catch(() => {});
+    if (state.layers.osm) loadOsmPlaces().then(() => renderResults()).catch(() => {});
   }, () => showToast('Нет разрешения на геолокацию. Можно продолжать без неё.'), { enableHighAccuracy: false, timeout: 8000 });
 });
 function searchLocation() {
@@ -498,12 +565,19 @@ function searchLocation() {
   const coords = value.match(/^(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)$/);
   if (coords) {
     const lat = Number(coords[1]), lon = Number(coords[2]);
-    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) { map.flyTo({ center: [lon, lat], zoom: 12 }); return; }
+    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      map.flyTo({ center: [lon, lat], zoom: 12 });
+      if (state.layers.weather) loadWeather().then(() => renderResults()).catch(() => {});
+      if (state.layers.osm) loadOsmPlaces().then(() => renderResults()).catch(() => {});
+      return;
+    }
   }
   fetchJson('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=' + encodeURIComponent(value))
     .then((data) => {
       if (!data.length) return showToast('Место не найдено');
       map.flyTo({ center: [Number(data[0].lon), Number(data[0].lat)], zoom: 12 });
+      if (state.layers.weather) loadWeather().then(() => renderResults()).catch(() => {});
+      if (state.layers.osm) loadOsmPlaces().then(() => renderResults()).catch(() => {});
       showToast(data[0].display_name);
     }).catch(() => showToast('Поиск временно недоступен'));
 }
