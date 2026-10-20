@@ -365,16 +365,15 @@ function renderResults() {
   const list = sourceItems
     .filter((f) => state.activeTab === 'world' || state.filter === 'all' || f.type === state.filter)
     .map((f) => ({ ...f, distance: Array.isArray(f.coords) ? distanceKm([center.lng, center.lat], f.coords) : Infinity }))
-    .sort((a, b) => {
-      if (a.type === 'earthquake' && b.type === 'earthquake') return b.mag - a.mag;
-      return a.distance - b.distance;
-    });
+    .sort((a, b) => a.distance - b.distance);
   $('#layer-count').textContent = String(Object.values(state.layers).filter(Boolean).length).padStart(2, '0');
   if (state.activeTab === 'world') {
     $('#result-summary').textContent = list.length ? list.length + ' сохранённых объектов на этом устройстве' : 'Твои личные находки — только на этом устройстве';
+  } else {
+    $('#result-summary').textContent = list.length ? list.length + ' объектов · сортировка по расстоянию от центра карты' : 'Нет объектов для выбранных фильтров';
   }
   if (!list.length) {
-    $('#results').innerHTML = '<div class="empty-state"><span>⌁</span><p>' + (state.activeTab === 'world' ? 'Пока нет сохранённых находок. Открой DISCOVER и нажми ＋ у интересного объекта.' : 'Нет загруженных объектов в этом слое. Включи слой или обнови данные.') + '</p></div>';
+    $('#results').innerHTML = '<div class="empty-state"><span>⌁</span><p>' + (state.activeTab === 'world' ? 'Пока нет сохранённых находок. Открой RADAR и нажми ＋ у интересного объекта.' : 'Нет загруженных объектов в этом слое. Включи слой или обнови данные.') + '</p></div>';
     return;
   }
   $('#results').innerHTML = list.slice(0, 35).map((f) => {
@@ -515,7 +514,7 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
   const tab = button.dataset.tab;
   state.activeTab = tab;
   document.body.dataset.tab = tab;
-  $('#discover-panel').classList.toggle('panel-expanded', tab === 'radar' || tab === 'discover' || tab === 'world');
+  $('#discover-panel').classList.toggle('panel-expanded', tab === 'radar' || tab === 'world');
   // Panel resizing changes the map viewport on mobile; explicitly recalculate it
   // so the geographic center and rendered tiles do not appear to jump.
   requestAnimationFrame(() => map.resize());
@@ -526,7 +525,7 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
   $('#refresh-button').classList.toggle('hidden', tab === 'world');
   if (tab === 'world') { renderResults(); return; }
   if (tab === 'map') { $('#discover-panel').classList.remove('panel-expanded'); }
-  if (tab === 'radar' || tab === 'discover') { if (tab === 'discover') { state.filter = 'all'; document.querySelector('[data-filter="all"]').click(); } renderResults(); }
+  if (tab === 'radar') renderResults();
 }));
 const interestsKey = 'nu-interests';
 function finishWelcome(save) {
