@@ -278,7 +278,7 @@ async function loadOsmPlaces() {
     'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
-    ' );out geom tags 250;';
+    ' );out geom 250;';
   const response = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     signal: controller.signal,
