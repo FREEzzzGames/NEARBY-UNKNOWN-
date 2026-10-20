@@ -7,7 +7,7 @@ const state = {
   theme: localStorage.getItem('nu-theme') || 'Dark Science',
   filter: 'all',
   features: [],
-  layers: { earthquakes: true, weather: true, osm: false },
+  layers: { earthquakes: true, weather: true, osm: true },
   lastUpdated: null,
   mapReady: false,
   activeTab: 'map',
@@ -94,7 +94,7 @@ map.on('load', () => {
   map.on('moveend', () => {
     if (!state.layers.osm || !state.mapReady) return;
     clearTimeout(state.placesMoveTimer);
-    state.placesMoveTimer = setTimeout(() => loadOsmPlaces().catch(() => {}), 450);
+    state.placesMoveTimer = setTimeout(() => loadOsmPlaces().catch((error) => { if (error.name !== 'AbortError') $('#map-status-text').textContent = 'Места временно недоступны'; }), 900);
   });
   loadData();
 });
@@ -266,19 +266,21 @@ async function loadOsmPlaces() {
   state.placesController = controller;
   const requestId = ++state.placesRequestId;
   const bounds = map.getBounds();
+  if (map.getZoom() < 8) { $('#map-status-text').textContent = 'Приблизь карту, чтобы загрузить места'; return 0; }
   const south = Math.max(-85, bounds.getSouth()).toFixed(5);
   const west = Math.max(-180, bounds.getWest()).toFixed(5);
   const north = Math.min(85, bounds.getNorth()).toFixed(5);
   const east = Math.min(180, bounds.getEast()).toFixed(5);
   const bbox = south + ',' + west + ',' + north + ',' + east;
-  const query = '[out:json][timeout:15];(' +
+  const query = '[out:json][timeout:8];(' +
     'nwr[' + '"name"' + '][' + '"historic"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"tourism"~"museum|attraction|artwork|viewpoint|gallery"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"amenity"~"museum|arts_centre|theatre|planetarium"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"leisure"~"park|nature_reserve|garden"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"natural"~"cave_entrance|peak|volcano|spring"' + '](' + bbox + ');' +
     'nwr[' + '"name"' + '][' + '"man_made"~"lighthouse|observatory|water_tower"' + '](' + bbox + ');' +
-    ' );out geom 250;';
+    ' );out center 150;';
+  $('#map-status-text').textContent = 'Загружаем места на карте…';
   const response = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     signal: controller.signal,
@@ -327,7 +329,7 @@ async function loadOsmPlaces() {
   state.features = state.features.filter((f) => f.type !== 'osm').concat(features);
   syncSecondaryLayerData();
   renderResults();
-  $('#map-status-text').textContent = 'Места на видимой области: ' + features.length;
+  $('#map-status-text').textContent = 'Места на карте: ' + features.length;
   return features.length;
 }
 
@@ -384,7 +386,22 @@ function renderResults() {
     return '<article class="result-card" tabindex="0" data-id="' + escapeHtml(f.id) + '"><div class="result-icon ' + f.type + '">' + icon + '</div><div class="result-copy"><div class="result-meta"><span>' + label + '</span><span>' + (Number.isFinite(f.distance) ? distance : 'Сохранено') + '</span></div><h3>' + escapeHtml(f.title) + '</h3><p>' + escapeHtml(f.detail) + '</p><div class="result-source">↗ ' + escapeHtml(f.source) + '</div></div><button class="save-button ' + (isSaved ? 'saved' : '') + '" data-save="' + escapeHtml(f.id) + '" aria-label="' + (isSaved ? 'Удалить из избранного' : 'Сохранить в избранное') + '">' + (isSaved ? '✓' : '＋') + '</button></article>';
   }).join('');
   $('#results').querySelectorAll('.result-card').forEach((card) => {
-    const activate = () => { const f = state.features.find((item) => item.id === card.dataset.id) || readSavedItems()[card.dataset.id]; if (f && Array.isArray(f.coords)) { map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 11), speed: 0.8 }); showToast('Источник: ' + f.source); } };
+    const activate = () => {
+      const f = state.features.find((item) => item.id === card.dataset.id) || readSavedItems()[card.dataset.id];
+      if (!f || !Array.isArray(f.coords) || !Number.isFinite(f.coords[0]) || !Number.isFinite(f.coords[1])) return;
+      $('#discover-panel').classList.remove('panel-expanded');
+      document.body.dataset.tab = 'map';
+      document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === 'map'));
+      state.activeTab = 'map';
+      map.resize();
+      map.flyTo({ center: f.coords, zoom: Math.max(map.getZoom(), 14), speed: 0.75, essential: true });
+      const details = [f.category, f.detail].filter(Boolean).map(escapeHtml).join(' · ');
+      const link = safeUrl(f.url);
+      new maplibregl.Popup({ closeButton: true, maxWidth: '300px' })
+        .setLngLat(f.coords)
+        .setHTML('<div class="popup-card"><span class="eyebrow">СОХРАНЁННОЕ МЕСТО · ' + escapeHtml(f.source || 'Источник не указан') + '</span><strong>' + escapeHtml(f.title || 'Без названия') + '</strong><p>' + (details || 'Описание отсутствует') + '</p>' + (link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть первоисточник ↗</a></p>' : '') + '</div>')
+        .addTo(map);
+    };
     card.addEventListener('click', (event) => { if (!event.target.closest('[data-save]')) activate(); });
     card.addEventListener('keydown', (event) => { if (event.key === 'Enter') activate(); });
   });
@@ -396,7 +413,7 @@ function renderResults() {
     if (saved.has(id)) { saved.delete(id); delete items[id]; button.textContent = '+'; showToast('Удалено из избранного'); }
     else {
       const feature = state.features.find((item) => item.id === id) || items[id];
-      if (feature) items[id] = { id: feature.id, type: feature.type, title: feature.title, detail: feature.detail, coords: feature.coords, source: feature.source, url: feature.url, time: feature.time, mag: feature.mag };
+      if (feature) items[id] = { id: feature.id, type: feature.type, title: feature.title, detail: feature.detail, coords: feature.coords, source: feature.source, url: feature.url, category: feature.category, geometry: feature.geometry, time: feature.time, mag: feature.mag };
       saved.add(id); button.textContent = '✓'; showToast('Сохранено на этом устройстве');
     }
     localStorage.setItem('nu-saved', JSON.stringify([...saved]));
@@ -497,7 +514,11 @@ document.querySelectorAll('.nav-item').forEach((button) => button.addEventListen
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === button));
   const tab = button.dataset.tab;
   state.activeTab = tab;
+  document.body.dataset.tab = tab;
   $('#discover-panel').classList.toggle('panel-expanded', tab === 'radar' || tab === 'discover' || tab === 'world');
+  // Panel resizing changes the map viewport on mobile; explicitly recalculate it
+  // so the geographic center and rendered tiles do not appear to jump.
+  requestAnimationFrame(() => map.resize());
   $('#layers-panel').classList.add('hidden');
   $('#discover-panel').querySelector('.eyebrow').textContent = tab === 'world' ? 'ЛИЧНЫЙ АРХИВ' : 'ИССЛЕДОВАТЕЛЬСКИЙ РАДАР';
   $('#discover-panel h1').textContent = tab === 'world' ? 'Мой мир' : 'Неизвестное рядом';
