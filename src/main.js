@@ -421,10 +421,10 @@ function selectFeatureOnMap(feature) {
     const link = safeUrl(feature.url);
     const coordinates = lat.toFixed(5) + ', ' + lng.toFixed(5);
     const externalLink = link !== '#' ? '<p><a href="' + link + '" target="_blank" rel="noopener noreferrer">Открыть первоисточник ↗</a></p>' : '';
-    const popup = new maplibregl.Popup({ closeButton: true, maxWidth: '300px', offset: 12 })
+    new maplibregl.Popup({ closeButton: true, maxWidth: '300px', offset: 12 })
       .setLngLat([lng, lat])
-      .setHTML('<div class="popup-card"><span class="eyebrow">' + source + '</span><strong>' + title + '</strong><p>' + (details || 'Описание отсутствует') + '</p><small>Координаты: ' + coordinates + '</small>' + externalLink + '</div>');
-    map.once('moveend', () => popup.addTo(map));
+      .setHTML('<div class="popup-card"><span class="eyebrow">' + source + '</span><strong>' + title + '</strong><p>' + (details || 'Описание отсутствует') + '</p><small>Координаты: ' + coordinates + '</small>' + externalLink + '</div>')
+      .addTo(map);
   });
 }
 function readSavedItems() {
