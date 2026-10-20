@@ -216,11 +216,25 @@ $('#theme-button').addEventListener('click', () => {
   localStorage.setItem('nu-theme', state.theme);
   $('#theme-button small').textContent = state.theme.toUpperCase();
   const center = map.getCenter(), zoom = map.getZoom();
+  document.body.dataset.theme = state.theme;
   map.setStyle(themes.find((t) => t.name === state.theme).style);
-  map.once('styledata', () => {
-    $('#theme-button small').textContent = state.theme.toUpperCase();
+  map.once('style.load', () => {
+    if (!map.getSource('earthquakes')) {
+      map.addSource('earthquakes', { type: 'geojson', data: { type: 'FeatureCollection', features: state.features.filter((f) => f.type === 'earthquake').map((f) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: f.coords }, properties: { mag: f.mag, place: f.title, time: f.time, url: f.url } })) } });
+      map.addLayer({ id: 'earthquakes-glow', type: 'circle', source: 'earthquakes', paint: { 'circle-radius': ['interpolate', ['linear'], ['get', 'mag'], 0, 4, 3, 8, 6, 15], 'circle-color': '#ffb454', 'circle-opacity': 0.16, 'circle-blur': 1 }, layout: { visibility: state.layers.earthquakes ? 'visible' : 'none' } });
+      map.addLayer({ id: 'earthquakes-points', type: 'circle', source: 'earthquakes', paint: { 'circle-radius': ['interpolate', ['linear'], ['get', 'mag'], 0, 3, 3, 5, 6, 9], 'circle-color': ['case', ['>=', ['get', 'mag'], 5], '#ff5d66', ['>=', ['get', 'mag'], 3], '#ffb454', '#66fcf1'], 'circle-stroke-color': '#101820', 'circle-stroke-width': 1.5, 'circle-opacity': 0.92 }, layout: { visibility: state.layers.earthquakes ? 'visible' : 'none' } });
+      map.on('click', 'earthquakes-points', (event) => {
+        const feature = event.features?.[0]; if (!feature) return;
+        const p = feature.properties;
+        new maplibregl.Popup({ closeButton: true, maxWidth: '280px' }).setLngLat(event.lngLat).setHTML('<div class="popup-card"><span class="eyebrow">USGS · ЗЕМЛЕТРЯСЕНИЕ</span><strong>' + escapeHtml(p.place || 'Место не указано') + '</strong><p>Магнитуда: ' + Number(p.mag || 0).toFixed(1) + '</p><small>' + new Date(Number(p.time)).toLocaleString('ru-RU') + '</small><p><a href="' + safeUrl(p.url) + '" target="_blank" rel="noopener noreferrer">Открыть первоисточник ↗</a></p></div>').addTo(map);
+      });
+      map.on('mouseenter', 'earthquakes-points', () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', 'earthquakes-points', () => { map.getCanvas().style.cursor = ''; });
+    }
+    map.jumpTo({ center, zoom });
+    loadData();
   });
-  map.jumpTo({ center, zoom });
+  $('#theme-button small').textContent = state.theme.toUpperCase();
   showToast('Тема: ' + state.theme);
 });
 $('#theme-button small').textContent = state.theme.toUpperCase();
